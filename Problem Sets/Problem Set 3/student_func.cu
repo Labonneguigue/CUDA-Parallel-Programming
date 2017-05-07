@@ -6,7 +6,7 @@
 
   A High Dynamic Range (HDR) image contains a wider variation of intensity
   and color than is allowed by the RGB format with 1 byte per channel that we
-  have used in the previous assignment.  
+  have used in the previous assignment.
 
   To store this extra information we use single precision floating point for
   each channel.  This allows for an extremely wide range of intensity values.
@@ -53,7 +53,7 @@
   Old TV signals used to be transmitted in this way so that black & white
   televisions could display the luminance channel while color televisions would
   display all three of the channels.
-  
+
 
   Tone-mapping
   ============
@@ -79,7 +79,101 @@
 
 */
 
+#include <stdio.h>
+#include "reference_calc.cpp"
 #include "utils.h"
+
+#define NB_THREADS  1024
+
+__global__ void histo(const float* const lum,
+                                  unsigned int* const d_histo,
+                                  float lumRange,
+                                  float lumMin,
+                                  const size_t numRows,
+                                  const size_t numCols,
+                                  const size_t numBins){
+
+  const int2 thread_2D_pos = make_int2( blockIdx.x * blockDim.x + threadIdx.x,
+                                        blockIdx.y * blockDim.y + threadIdx.y);
+
+  if ( thread_2D_pos.x >= numCols ||
+       thread_2D_pos.y >= numRows )
+  {
+      return;
+  }
+
+  const int thread_1D_pos = thread_2D_pos.y * numCols + thread_2D_pos.x;
+
+  int bin = ((lum[thread_1D_pos] - lumMin) / lumRange) * numBins;
+  atomicAdd((d_histo+bin), 1);
+}
+
+
+__global__ void excluScan(unsigned int* d_cdf, const size_t numRows, const size_t numCols, const size_t numBins){
+
+    const int tid = threadIdx.x;
+
+    extern __shared__ float s_cdf[];
+
+    // First step of the Hillis Steel Scan, we write into shared memory.
+    // Instead of having a copy-only step.
+    if (tid >= 1){
+        s_cdf[tid] = d_cdf[tid] + d_cdf[tid - 1];
+    }
+
+    for (int hop = 2 ; hop < numBins ; hop <<= 1){
+        if (tid >= hop){
+            s_cdf[tid] += s_cdf[tid - hop];
+        }
+        __syncthreads();
+    }
+    // Inclusive to exclusive scan back to global memory
+    if (tid > 0){
+        d_cdf[tid] = s_cdf[tid-1];
+    }
+    d_cdf[0] = 0;
+}
+
+__global__ void reduceMinMax(const float* const d_logLuminance,
+                                float * d_outLum,
+                                const size_t numRows,
+                                const size_t numCols,
+                                const int isMax){
+
+    extern __shared__ float s_logLum[];
+
+    int tid = threadIdx.x;
+    int global_tid = blockIdx.x * blockDim.x + tid;
+
+    if (global_tid >= (numRows*numCols)){
+        return;
+    }
+
+    // Copy of the luminance from global memory to shared memory
+    // to reduce the access time
+    s_logLum[tid] = d_logLuminance[global_tid];
+    __syncthreads();
+
+    // At each iteration, we min/max 2 elements and store it in the left
+    // side of the array. The width is then halved. Until we end up with only
+    // 1 element at position [0]
+    unsigned int i;
+    for (i = blockDim.x/2 ; i > 0 ; i >>= 1){
+        if (tid < i && (tid+i) < (numRows*numCols)){
+            if (isMax){
+                s_logLum[tid] = max(s_logLum[tid], s_logLum[tid + i]);
+            } else {
+                s_logLum[tid] = min(s_logLum[tid], s_logLum[tid + i]);
+            }
+        }
+        __syncthreads();
+    }
+
+    // Output the max of the block to global memory.
+    if (tid == 0){
+        *(d_outLum + blockIdx.x) = s_logLum[0];
+    }
+}
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
@@ -100,5 +194,43 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
 
+    int nb_blocks = ((numRows*numCols) / NB_THREADS) + 1;
 
+    float * d_intermediateLogLum;
+    checkCudaErrors(cudaMalloc(&d_intermediateLogLum, sizeof(float) * nb_blocks));
+
+    // First call to reduceMinMax to do the MIN
+    reduceMinMax<<<nb_blocks, NB_THREADS, sizeof(float) * NB_THREADS>>>(d_logLuminance, d_intermediateLogLum, numRows, numCols, 0);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    float * d_min_logLum;
+    checkCudaErrors(cudaMalloc(&d_min_logLum, sizeof(float)));
+    reduceMinMax<<<1, NB_THREADS, sizeof(float) * NB_THREADS>>>(d_intermediateLogLum, d_min_logLum, numRows, numCols, 0);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaMemcpy(&min_logLum, d_min_logLum, sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Now, the MAX
+    reduceMinMax<<<nb_blocks, NB_THREADS, sizeof(float) * NB_THREADS>>>(d_logLuminance, d_intermediateLogLum, numRows, numCols, 1);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    float * d_max_logLum;
+    checkCudaErrors(cudaMalloc(&d_max_logLum, sizeof(float)));
+    reduceMinMax<<<1, NB_THREADS, sizeof(float) * NB_THREADS>>>(d_intermediateLogLum, d_max_logLum, numRows, numCols, 1);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaMemcpy(&max_logLum, d_max_logLum, sizeof(float), cudaMemcpyDeviceToHost));
+
+    // We now can calculate the range of luminance.
+    float lumRange = max_logLum - min_logLum;
+
+    //printf("min: %f\n", min_logLum);
+    //printf("max: %f\n", max_logLum);
+
+    const dim3 blockSize(32, 32, 1);
+    const dim3 gridSize(numCols/32+1, numRows/32+1, 1);
+
+    // I now create a histogram on numBins channels.
+    histo<<<gridSize, blockSize>>>(d_logLuminance, d_cdf, lumRange, min_logLum, numRows, numCols, numBins);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    // Finally a hillis and steele exclusive scan is performed.
+    excluScan<<<1, numBins, sizeof(float) * numBins>>>(d_cdf, numRows, numCols, numBins);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 }
