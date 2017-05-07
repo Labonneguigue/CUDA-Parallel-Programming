@@ -233,4 +233,8 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     // Finally a hillis and steele exclusive scan is performed.
     excluScan<<<1, numBins, sizeof(float) * numBins>>>(d_cdf, numRows, numCols, numBins);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    checkCudaErrors(cudaFree(d_intermediateLogLum));
+    checkCudaErrors(cudaFree(d_min_logLum));
+    checkCudaErrors(cudaFree(d_max_logLum));
 }

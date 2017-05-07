@@ -103,14 +103,11 @@
 #include "reference_calc.cpp"
 #include "utils.h"
 
-__global__
-void gaussian_blur(const unsigned char* const inputChannel,
+__global__ void gaussian_blur(const unsigned char* const inputChannel,
                    unsigned char* const outputChannel,
                    int numRows, int numCols,
                    const float* const filter, const int filterWidth)
 {
-  // TODO
-
   // NOTE: Be sure to compute any intermediate results in floating point
   // before storing the final result as unsigned char.
 
@@ -118,44 +115,34 @@ void gaussian_blur(const unsigned char* const inputChannel,
   // the image. You'll want code that performs the following check before accessing
   // GPU memory:
 
- const int2 thread_2D_pos = make_int2( blockIdx.x * blockDim.x + threadIdx.x,
-                                        blockIdx.y * blockDim.y + threadIdx.y);
+  const int2 thread_2D_pos = make_int2( blockIdx.x * blockDim.x + threadIdx.x, blockIdx.y * blockDim.y + threadIdx.y);
 
-  if ( thread_2D_pos.x >= numCols ||
-       thread_2D_pos.y >= numRows )
+  if ( thread_2D_pos.x >= numCols || thread_2D_pos.y >= numRows )
   {
       return;
   }
 
   const int thread_1D_pos = thread_2D_pos.y * numCols + thread_2D_pos.x;
 
+  int half = filterWidth / 2;
+  float blur = 0.f;                                // will contained blurred value
+  int width  = numCols - 1;
+  int height = numRows - 1;
 
-  int              half   = filterWidth / 2;
-    float          blur   = 0.f;                                // will contained blurred value
-    int              width  = numCols - 1;
-    int              height = numRows - 1;
+  for (int r = -half; r <= half; ++r)                    // rows
+  {
+      for (int c = -half; c <= half; ++c)                // columns
+      {
+          // Clamp filter to the image border
+          int h = min(max( thread_2D_pos.y + r, 0), height);
+          int w = min(max( thread_2D_pos.x + c, 0), width);
+          float pixel = static_cast<float>(inputChannel[w + numCols * h]);
+          float weight = filter[(r + half) * filterWidth + c + half];
+          blur += pixel * weight;
+      }
+  }
 
-    for (int r = -half; r <= half; ++r)                    // rows
-    {
-        for (int c = -half; c <= half; ++c)                // columns
-        {
-            // Clamp filter to the image border
-            int        h        = min(max( thread_2D_pos.y + r, 0), height);
-            int        w        = min(max( thread_2D_pos.x + c, 0), width);
-
-            // Blur is a product of current pixel value and weight of that pixel.
-            // Remember that sum of all weights equals to 1, so we are averaging sum of all pixels by their weight.
-            int        idx        = w + numCols * h;                                            // current pixel index
-            float    pixel    = static_cast<float>(inputChannel[idx]);
-
-                    idx        = (r + half) * filterWidth + c + half;
-            float    weight    = filter[idx];
-
-            blur += pixel * weight;
-        }
-    }
-
-    outputChannel[thread_1D_pos] = static_cast<unsigned char>(blur);
+  outputChannel[thread_1D_pos] = static_cast<unsigned char>(blur);
 
   // NOTE: If a thread's absolute position 2D position is within the image, but some of
   // its neighbors are outside the image, then you will need to be extra careful. Instead
@@ -167,8 +154,7 @@ void gaussian_blur(const unsigned char* const inputChannel,
 
 //This kernel takes in an image represented as a uchar4 and splits
 //it into three images consisting of only one color channel each
-__global__
-void separateChannels(const uchar4* const inputImageRGBA,
+__global__ void separateChannels(const uchar4* const inputImageRGBA,
                       int numRows,
                       int numCols,
                       unsigned char* const redChannel,

@@ -56,7 +56,9 @@ void rgba_to_greyscale(const uchar4* const rgbaImage,
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if (x >= numCols || y >= numRows){return;}
+    if (x >= numCols || y >= numRows){
+        return;
+    }
 
     uchar4 rgba = rgbaImage[y * numCols + x];
     float channelSum = .299f * rgba.x + .587f * rgba.y + .114f * rgba.z;
