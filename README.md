@@ -15,7 +15,7 @@ My code is in the ```student_func.cu``` file in each Problem Set
 This problem highlights the construction of High Dynamic Range (HDR) images that contains a wider variation of intensity and color than is allowed by the RGB format with 1 byte per channel.
 In the image for this assignment, the inside of church with light coming in through stained glass windows, the raw input floating point values for the channels range from 0 to 275.  But the mean is .41 and 98% of the values are less than 3! This means that certain areas (the windows) are extremely bright compared to everywhere else. If we linearly map this [0-275] range into the [0-255] range that we have been using then most values will be mapped to zero! The only thing we will be able to see are the very brightest areas - the windows - everything else will appear pitch black.
 
-![ScreenShot](Problem\ Sets/Problem\ Set\ 3/memorial_raw_large.png)
+![ScreenShot](Problem-Sets/Problem-Set-3/memorial_raw_large.png)
 
 
 Code performed in 1.59904 ms.
